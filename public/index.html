@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Marchéo</title>
+<style>
+:root{--bg:#fffaf0;--surface:#fff;--text:#2a1b0e;--muted:#6f5c49;--accent:#e8590c;--ok:#2b8a3e;--bad:#c92a2a;--border:#efe2cc}
+@media (prefers-color-scheme:dark){:root{--bg:#1a120a;--surface:#261a0f;--text:#fbf3e6;--muted:#c2ad93;--accent:#ff8a3d;--ok:#5fd17a;--bad:#ff8787;--border:#3b2a18}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;line-height:1.5;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+.wrap{max-width:520px;margin:0 auto;padding:16px}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.logo{font-weight:800;font-size:1.35rem}.logo span{color:var(--accent)}
+nav{display:flex;gap:6px;overflow-x:auto;margin:8px 0 14px}
+nav button{flex:none;width:auto;margin:0;padding:9px 14px;background:transparent;color:var(--text);border:1px solid var(--border);font-weight:600}
+nav button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:16px;margin-bottom:14px}
+h2{font-size:1.25rem;margin:0 0 10px}
+label{display:block;font-weight:600;font-size:.88rem;margin:10px 0 4px}
+input,select,textarea{width:100%;font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:11px}
+button,.btn{display:block;width:100%;font:inherit;font-weight:700;background:var(--accent);color:#fff;border:0;border-radius:12px;padding:13px;margin-top:14px;cursor:pointer;text-align:center;text-decoration:none}
+button.alt,.btn.alt{background:transparent;color:var(--text);border:1px solid var(--border)}
+button:disabled{opacity:.55}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.muted{color:var(--muted);font-size:.9rem}
+.msg{margin-top:10px;font-size:.92rem;min-height:1.2em}
+.err{color:var(--bad)}.okc{color:var(--ok)}
+.item{border-top:1px solid var(--border);padding:12px 0}.item:first-child{border-top:0}
+.badge{font-size:.78rem;font-weight:700;border-radius:99px;padding:2px 10px;border:1px solid var(--border)}
+video{width:100%;max-height:60vh;border-radius:12px;background:#000;margin-top:8px}
+.pay{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:10px 14px;margin:10px 0;font-size:.92rem}
+.hide{display:none}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+<script>
+const $app = document.getElementById('app');
+let token = localStorage.getItem('mt') || '', me = null, tab = 'create', timer = null, plans = null;
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fcfa = n => Number(n).toLocaleString('fr-FR') + ' FCFA';
+const date = t => t ? new Date(t).toLocaleDateString('fr-FR') : '';
+const STATUS = { queued: '⏳ En attente', processing: '🎬 En création', done: '✅ Prête', failed: '❌ Échec', pending: '⏳ À vérifier', approved: '✅ Validé', rejected: '❌ Refusé' };
+
+async function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (token) headers.Authorization = 'Bearer ' + token;
+  if (opts.body && !(opts.body instanceof FormData)) { headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(opts.body); }
+  const r = await fetch(path, { ...opts, headers });
+  if (r.status === 401 && token) { logout(); throw new Error('Reconnectez-vous'); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || 'Erreur, réessayez');
+  return data;
+}
+const msg = (id, t, ok) => { const e = document.getElementById(id); if (e) { e.textContent = t; e.className = 'msg ' + (ok ? 'okc' : 'err'); } };
+function logout() { localStorage.removeItem('mt'); token = ''; me = null; clearInterval(timer); render(); }
+
+function render() {
+  clearInterval(timer);
+  if (!me) return renderAuth();
+  const tabs = [['create', 'Créer'], ['videos', 'Mes vidéos'], ['plan', 'Abonnement']];
+  if (me.role === 'admin') tabs.push(['admin', 'Admin']);
+  $app.innerHTML = `<div class="top"><div class="logo">Marché<span>o</span></div><button class="alt" style="width:auto;margin:0;padding:8px 12px" id="out">Quitter</button></div>
+  <div class="muted">${esc(me.name || me.phone)} · ${esc(me.plan_label)} · ${me.videos_left} vidéo(s) restante(s)</div>
+  <nav>${tabs.map(([k, l]) => `<button class="${tab === k ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</nav><div id="view"></div>`;
+  document.getElementById('out').onclick = logout;
+  document.querySelectorAll('nav button').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
+  ({ create: viewCreate, videos: viewVideos, plan: viewPlan, admin: viewAdmin })[tab]();
+}
+
+function renderAuth(mode = 'login') {
+  $app.innerHTML = `<div class="logo">Marché<span>o</span></div><h2 style="margin-top:18px">Des vidéos qui font vendre</h2>
+  <div class="card"><label>Numéro de téléphone</label><input id="ph" type="tel" inputmode="numeric" placeholder="Ex. 70123456">
+  ${mode === 'register' ? '<label>Nom (facultatif)</label><input id="nm" placeholder="Votre nom ou boutique">' : ''}
+  <label>Mot de passe</label><input id="pw" type="password" placeholder="6 caractères minimum">
+  <button id="go">${mode === 'login' ? 'Me connecter' : 'Créer mon compte'}</button>
+  <button class="alt" id="sw">${mode === 'login' ? 'Pas de compte ? S’inscrire' : 'J’ai déjà un compte'}</button><div id="m" class="msg"></div></div>`;
+  document.getElementById('sw').onclick = () => renderAuth(mode === 'login' ? 'register' : 'login');
+  document.getElementById('go').onclick = async () => {
+    try {
+      const body = { phone: ph.value, password: pw.value }; if (mode === 'register') body.name = nm.value;
+      const r = await api('/api/' + mode, { method: 'POST', body });
+      token = r.token; localStorage.setItem('mt', token); me = r.user; tab = 'create'; render();
+    } catch (e) { msg('m', e.message); }
+  };
+}
+
+function viewCreate() {
+  document.getElementById('view').innerHTML = `<div class="card"><h2>Nouvelle vidéo</h2>
+  <label>Nom de la boutique</label><input id="shop"><label>Produit à promouvoir</label><input id="prod" placeholder="Ex. Pagnes wax">
+  <div class="row"><div><label>Prix</label><input id="price" placeholder="5 000 FCFA"></div><div><label>Ville</label><input id="city"></div></div>
+  <label>Langue</label><select id="lang"><option>Français</option><option>Anglais</option><option>Français simple et chaleureux</option></select>
+  <label>Photos (jusqu’à 6)</label><input id="ph" type="file" accept="image/jpeg,image/png,image/webp" multiple>
+  <button id="go">✨ Créer ma vidéo</button><div id="m" class="msg"></div></div>`;
+  document.getElementById('go').onclick = async () => {
+    const fd = new FormData();
+    fd.append('shop', shop.value); fd.append('product', prod.value); fd.append('price', price.value); fd.append('city', city.value); fd.append('lang', lang.value);
+    [...ph.files].slice(0, 6).forEach(f => fd.append('photos', f));
+    go.disabled = true; msg('m', 'Envoi en cours…', true);
+    try { await api('/api/videos', { method: 'POST', body: fd }); me = await api('/api/me'); tab = 'videos'; render(); }
+    catch (e) { msg('m', e.message); if (/Quota/.test(e.message)) { tab = 'plan'; setTimeout(render, 1500); } }
+    go.disabled = false;
+  };
+}
+
+async function viewVideos() {
+  const v = document.getElementById('view');
+  async function load() {
+    const list = await api('/api/videos');
+    v.innerHTML = `<div class="card"><h2>Mes vidéos</h2>${list.length ? list.map(x => `<div class="item"><b>${esc(x.product)}</b> · ${esc(x.shop)}<br>
+      <span class="badge">${STATUS[x.status]}</span> <span class="muted">${date(x.created_at)}</span>
+      ${x.error ? `<div class="err">${esc(x.error)}</div>` : ''}
+      ${x.status === 'done' ? `<button class="alt" data-v="${x.id}">Voir la vidéo</button><div id="v${x.id}"></div>` : ''}</div>`).join('') : '<p class="muted">Aucune vidéo pour le moment.</p>'}</div>`;
+    v.querySelectorAll('[data-v]').forEach(b => b.onclick = () => showVideo(b.dataset.v, list.find(x => x.id == b.dataset.v)));
+    if (list.some(x => x.status === 'queued' || x.status === 'processing')) timer = setTimeout(() => tab === 'videos' && load().catch(() => {}), 4000);
+    else { me = await api('/api/me'); }
+  }
+  try { await load(); } catch (e) { v.textContent = e.message; }
+}
+async function showVideo(id, x) {
+  const box = document.getElementById('v' + id); box.innerHTML = '<p class="muted">Chargement…</p>';
+  try {
+    const r = await fetch('/api/videos/' + id + '/file', { headers: { Authorization: 'Bearer ' + token } });
+    if (!r.ok) throw new Error();
+    const url = URL.createObjectURL(await r.blob());
+    box.innerHTML = `<video src="${url}" controls playsinline></video><a class="btn" href="${url}" download="video-marcheo-${id}.mp4">⬇️ Télécharger</a>
+      <label>Message à publier</label><textarea rows="4">${esc(x.post)}</textarea>
+      <a class="btn alt" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(x.post || '')}">Partager sur WhatsApp</a>`;
+  } catch { box.innerHTML = '<p class="err">Impossible de charger la vidéo.</p>'; }
+}
+
+async function viewPlan() {
+  const v = document.getElementById('view');
+  try {
+    plans = plans || await api('/api/plans');
+    const pays = await api('/api/payments');
+    const P = plans.plans, N = plans.pay_numbers;
+    v.innerHTML = `<div class="card"><h2>Mon abonnement</h2><p>${esc(me.plan_label)} · ${me.videos_left} vidéo(s) restante(s)${me.plan !== 'essai' ? ' · jusqu’au ' + date(me.plan_expires) : ''}</p></div>
+    <div class="card"><h2>Offres</h2>${Object.entries(P).map(([k, p]) => `<div class="item"><b>${esc(p.label)}</b> · ${p.videos} vidéo(s)/mois<br><span class="muted">${p.price ? fcfa(p.price) + ' / mois' : 'Gratuit'}</span></div>`).join('')}
+    <div class="pay"><b>Comment payer ?</b><br>1. Envoyez le montant par Mobile Money :<br>• Orange Money : <b>${esc(N.orange)}</b><br>• Telmob : <b>${esc(N.telmob)}</b><br>2. Notez la référence de la transaction (dans le SMS de confirmation).<br>3. Remplissez le formulaire ci-dessous.</div>
+    <label>Offre payée</label><select id="pl">${Object.entries(P).filter(([k]) => k !== 'essai').map(([k, p]) => `<option value="${k}">${esc(p.label)} – ${fcfa(p.price)}</option>`).join('')}</select>
+    <label>Opérateur</label><select id="op"><option value="orange">Orange Money</option><option value="telmob">Telmob</option></select>
+    <label>Référence de la transaction</label><input id="ref"><button id="go">J’ai payé</button><div id="m" class="msg"></div></div>
+    <div class="card"><h2>Mes paiements</h2>${pays.length ? pays.map(p => `<div class="item">${esc(P[p.plan]?.label)} · ${fcfa(p.amount)}<br><span class="badge">${STATUS[p.status]}</span> <span class="muted">${date(p.created_at)}</span></div>`).join('') : '<p class="muted">Aucun paiement.</p>'}</div>`;
+    document.getElementById('go').onclick = async () => {
+      try { await api('/api/payments', { method: 'POST', body: { plan: pl.value, operator: op.value, reference: ref.value } }); msg('m', 'Reçu ! Votre abonnement sera activé après vérification.', true); setTimeout(viewPlan, 1500); }
+      catch (e) { msg('m', e.message); }
+    };
+  } catch (e) { v.textContent = e.message; }
+}
+
+async function viewAdmin() {
+  const v = document.getElementById('view');
+  try {
+    const list = await api('/api/admin/payments');
+    v.innerHTML = `<div class="card"><h2>Paiements à vérifier</h2>${list.length ? list.map(p => `<div class="item"><b>${esc(p.name || p.phone)}</b> (${esc(p.phone)})<br>${esc(p.plan)} · ${fcfa(p.amount)} · ${esc(p.operator)}<br>Réf : <b>${esc(p.reference)}</b> <span class="muted">${date(p.created_at)}</span>
+      <div class="row"><button data-a="approve" data-id="${p.id}">Valider</button><button class="alt" data-a="reject" data-id="${p.id}">Refuser</button></div></div>`).join('') : '<p class="muted">Rien à vérifier.</p>'}</div>`;
+    v.querySelectorAll('[data-a]').forEach(b => b.onclick = async () => {
+      if (b.dataset.a === 'reject' && !confirm('Refuser ce paiement ?')) return;
+      try { await api(`/api/admin/payments/${b.dataset.id}/${b.dataset.a}`, { method: 'POST' }); viewAdmin(); } catch (e) { alert(e.message); }
+    });
+  } catch (e) { v.textContent = e.message; }
+}
+
+(async () => { if (token) { try { me = await api('/api/me'); } catch {} } render(); })();
+</script>
+</body>
+  </html>
